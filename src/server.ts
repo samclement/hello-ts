@@ -23,7 +23,7 @@ const server = http.createServer((request, response) => {
   }
 
   const body = {
-    message: `hello from ${serviceName}`,
+    message: `hello from ${serviceName} (auto-deployed)`,
     service: serviceName,
     path: url.pathname,
     user: typeof user === "string" ? user : null,
