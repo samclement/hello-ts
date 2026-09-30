@@ -1,0 +1,72 @@
+name: Container
+
+# Type-check, build and push the image to GHCR tagged <run number>-<short sha> (for example
+# 42-a1b2c3d). The platform's image automation deploys the highest run number to staging for
+# instances created with make app-new --preset; the job summary prints the image with its digest,
+# which is what New app (or a hand-edited pin) needs.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Type-check
+        run: |
+          npm ci
+          npm run check
+
+      - name: Image name and tag
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_RUN_NUMBER}-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+
+      - name: Record the image
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo
+            echo "Staging instances created with the swhurl presets deploy this automatically. For a new"
+            echo "instance, paste the line above into the console's New app Image field."
+          } >> "$GITHUB_STEP_SUMMARY"
