@@ -6,7 +6,7 @@ A minimal TypeScript HTTP service that runs on the [swhurl platform](https://git
 
 1. **Use this template** on GitHub (top right) and create `<owner>/<app>` (public, so the cluster can pull its image without credentials).
 2. Push to `main` (or run the Container workflow). The run's summary prints the image, for example `ghcr.io/<owner>/<app>:1-a1b2c3d@sha256:…`.
-3. On GitHub, open the repository's package (**Packages** on the right) → **Package settings** → **Change visibility** → Public. New packages start private, and the cluster pulls images anonymously.
+3. The cluster pulls images anonymously, so the package must be public. A package published from a public repository has been public so far (checked 30 September 2026); if the pod reports an image pull error, open the repository's package (**Packages** on the right) → **Package settings** → **Change visibility** → Public.
 4. In the platform console, **New app** → *Web app from the swhurl template* (the default): the name, the image line from step 2 and who can reach it. Merge the pull request it opens.
 
 From then on every push to `main` reaches staging on its own: the workflow publishes `<run>-<sha>`, the platform's image automation commits the new tag and digest to the staging instance, and Flux deploys it. Promote to production from the console (**Promote to prod**) or with `make app-promote`. How that works: [deploy a new image](https://github.com/samclement/swhurl-platform/blob/main/docs/apps.md#deploy-a-new-image).
@@ -20,7 +20,7 @@ What the image provides (keep these true, or override them on the platform with 
 | Port | `8080` (`PORT`) | `Dockerfile`, `src/server.ts` |
 | Health path | `GET /healthz` returns 200 | `src/server.ts` |
 | User | UID 65532, non-root, read-only root filesystem friendly (writes only to `/tmp`) | distroless `nonroot` base image |
-| OpenTelemetry SDK | Node auto-instrumentation, turned on by `NODE_OPTIONS`; traces and metrics over OTLP, logs not exported (stdout is collected) | `Dockerfile` |
+| OpenTelemetry SDK | Node auto-instrumentation, loaded before the app by `NODE_OPTIONS=--import /app/dist/instrumentation.js` (it registers the ES-module hook, without which HTTP is not traced); traces and metrics over OTLP, logs not exported (stdout is collected) | `src/instrumentation.ts`, `Dockerfile` |
 | Logs | JSON on stdout (`pino`) | `src/server.ts` |
 | Image tags | `<run number>-<short sha>`, never `latest` | `.github/workflows/container.yml` |
 
@@ -35,8 +35,23 @@ npm install
 npm run dev                             # the SDK stays off locally (the image turns it on)
 curl http://localhost:8080/healthz
 npm run check                           # type-check, as CI does
+npm run build && npm test               # the tests run against the built server
 ```
 
-To see telemetry locally, run an OpenTelemetry collector on `localhost:4318` and start with `NODE_OPTIONS="--require @opentelemetry/auto-instrumentations-node/register" npm run dev`.
+To see telemetry locally, `npm run build`, then `OTEL_TRACES_EXPORTER=console node --import ./dist/instrumentation.js dist/server.js` prints spans (or run an OpenTelemetry collector on `localhost:4318` and drop the variable).
 
-Dependencies are updated by Renovate pull requests in this repository (the Renovate GitHub App needs access to it).
+## Checks and dependency updates
+
+Every pull request and every push to `main` runs the same checks (`.github/workflows/container.yml`): type-check, `npm test`, an image build, and a smoke test that starts the image the way the cluster does (read-only root filesystem, only `/tmp` writable) and expects `/healthz` to answer and the process to stay up. Only `main` pushes the image.
+
+[Renovate](https://docs.renovatebot.com/) opens the update pull requests. `renovate.json` extends the template's shared [`renovate-preset.json`](https://github.com/samclement/swhurl-app-template-typescript/blob/main/renovate-preset.json), so rule changes there reach every app:
+
+| Update | What happens |
+| --- | --- |
+| Minor, patch, digest | Merges itself once every check passes; the merge publishes an image, which deploys to staging. Promote to production as usual |
+| Major | Waits for you to review and merge |
+| OpenTelemetry packages | One grouped pull request |
+
+**Keep a test.** `test/healthz.test.mjs` is the minimum; add tests for what the app does. An app without tests should not merge updates unchecked: set `"automerge": false` in its `renovate.json`, so updates wait for you, and check staging before promoting.
+
+Renovate runs here because the Renovate GitHub App is installed for all repositories with a config file required; a new repository from this template is picked up on its next run, with no onboarding pull request. The Dependency Dashboard issue lists pending updates.
