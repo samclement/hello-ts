@@ -59,3 +59,5 @@ Every pull request and every push to `main` runs the same checks, from the workf
 Renovate runs here because the Renovate GitHub App is installed for all repositories with a config file required; a new repository from this template is picked up on its next run, with no onboarding pull request. The Dependency Dashboard issue lists pending updates.
 
 
+
+A published image reaches staging at once through the platform image webhook.
