@@ -8,3 +8,8 @@ healthPath: /healthz
 uid: 65532
 telemetry: otlp
 autoDeploy: true
+# What this app offers other apps: its API description (served, and kept in the repository) and its events.
+# The platform reads both files for every image; the events file says what the app publishes.
+provides:
+  api: /openapi.json
+  apiFile: openapi.json
