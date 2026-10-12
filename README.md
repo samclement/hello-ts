@@ -1,34 +1,43 @@
-# swhurl app template (TypeScript)
+# hello-ts
 
-A minimal TypeScript HTTP service that runs on the [swhurl platform](https://github.com/samclement/swhurl-platform) as it is: OpenTelemetry traces and metrics, JSON logs, a health endpoint and an image published to GHCR on every push. Use it as a GitHub template for a new app.
+The first swhurl example app: says hello and repeats itself
 
-## Start a new app
+A TypeScript app on the [swhurl platform](https://github.com/samclement/swhurl-platform), made from the [swhurl TypeScript template](https://github.com/samclement/swhurl-app-template-typescript). Every push to `main` is checked, published to `ghcr.io/<owner>/hello-ts` and deployed to staging; production changes through **Promote to production**. What the image must provide, the checks and the dependency updates: the [template's guide](https://github.com/samclement/swhurl-app-template-typescript#readme). What the app needs from the platform: [`swhurl.yaml`](swhurl.yaml).
 
-1. **Use this template** on GitHub (top right) and create `<owner>/<app>` (public, so the cluster can pull its image without credentials).
-2. Push to `main` (or run the Container workflow). The run's summary prints the image, for example `ghcr.io/<owner>/<app>:1-a1b2c3d@sha256:…`.
-3. The cluster pulls images anonymously, so the package must be public. A package published from a public repository has been public so far (checked 30 September 2026); if the pod reports an image pull error, open the repository's package (**Packages** on the right) → **Package settings** → **Change visibility** → Public.
-4. In the platform console, **New app** → *Web app from the swhurl template* (the default): the name, the image line from step 2 and who can reach it. Merge the pull request it opens.
+An HTTP service on [Hono](https://hono.dev): `src/app.ts` holds the routes and `src/server.ts` listens on port 8080; the platform probes `GET /healthz`.
 
-From then on every push to `main` reaches staging on its own: the workflow publishes `<run>-<sha>`, the platform's image automation commits the new tag and digest to the staging instance, and Flux deploys it. Promote to production from the console (**Promote to prod**) or with `make app-promote`. How that works: [deploy a new image](https://github.com/samclement/swhurl-platform/blob/main/docs/apps.md#deploy-a-new-image).
+## Callers and calling other apps
 
-## The contract with the platform
+`src/platform.ts` holds what the platform gives the app ([calling another app](https://github.com/samclement/swhurl-platform/blob/main/docs/apps.md#calling-another-app)):
 
-[`swhurl.yaml`](swhurl.yaml) tells the platform what this app needs: the kind, port, health path, user, telemetry and, when used, a database and secret names. The platform's `make app-new --from-repo <owner>/<app>` reads it, so keep it true when you change any of these; its fields are listed in the platform's [apps guide](https://github.com/samclement/swhurl-platform/blob/main/docs/apps.md#swhurlyaml).
+- **Who is calling.** `identify(headers)` returns `{ type: "app", id: "<app>" }` for another app that sent a token the platform issued for this app alone, `{ type: "user", id: "<email>" }` for a signed-in person, or `anonymous`. A bad token throws `Unauthorized`, which `src/app.ts` answers with 401. Every log line and span carries `caller.type` and `caller.id`. For a route only apps may use, call `requireApp(caller)`.
+- **Calling another app.** Add `calls: [orders]` to `swhurl.yaml` before the app is created (afterwards: `make app-calls` on the platform, or the app page's **Calls** form). Then `await service("orders").fetch("/path")` reaches the same environment's `orders` with this app's token for it; the callee's spans join the same trace. `GET /call/orders` in `src/app.ts` is an example to replace.
 
-What the image provides (keep these true, and update `swhurl.yaml` with them):
+## Notifications
 
-| | Value | Where |
-| --- | --- | --- |
-| Port | `8080` (`PORT`) | `Dockerfile`, `src/server.ts` |
-| Health path | `GET /healthz` returns 200 | `src/server.ts` |
-| User | UID 65532, non-root, read-only root filesystem friendly (writes only to `/tmp`) | distroless `nonroot` base image |
-| OpenTelemetry SDK | Node auto-instrumentation, loaded before the app by `NODE_OPTIONS=--import /app/dist/instrumentation.js` (it registers the ES-module hook, without which HTTP is not traced); traces and metrics over OTLP, logs not exported (stdout is collected) | `src/instrumentation.ts`, `Dockerfile` |
-| Logs | JSON on stdout (`pino`) | `src/server.ts` |
-| Image tags | `<run number>-<short sha>`, never `latest` | the shared [`app.yml`](https://github.com/samclement/swhurl-app-template-typescript/blob/main/.github/workflows/app.yml) |
+`await notify("Order backlog", { message: "412 orders waiting", priority: "high" })` (from `src/platform.ts`) sends a message to the notification channel of the team that owns this app ([notifications](https://github.com/samclement/swhurl-platform/blob/main/docs/apps.md#notifications)). Nothing is declared in `swhurl.yaml`: the platform gives every app the address and a token. The message arrives titled `<app>/<env>: Order backlog`. The call resolves to whether the platform accepted it and never throws; an app may send 30 an hour, and a team without a channel delivers nothing. `POST /notify` in `src/server.ts` is an example to replace. Locally there is no notify service: `notify` resolves to `false` and sends nothing.
 
-What the platform injects (the preset's `--otlp`): `OTEL_EXPORTER_OTLP_ENDPOINT` (the collector on the pod's node), `OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf` and `OTEL_SERVICE_NAME` (the app name). Nothing in this repository names the cluster; the platform owns the Kubernetes manifests.
+## Events
 
-Sign-in happens before requests reach the app; it can read the user from `X-Auth-Request-Email`, `X-Auth-Request-User` and `X-Auth-Request-Preferred-Username`.
+`src/events.ts` publishes and receives events on the platform's NATS ([events](https://github.com/samclement/swhurl-platform/blob/main/docs/apps.md#events)). Declare them in `swhurl.yaml` before the app is created (afterwards: `make app-events` on the platform):
+
+```yaml
+events:
+  publish: [created]               # other apps see hello-ts.created
+  subscribe: [orders.created]      # <app>.<event>
+```
+
+Then `await publish("created", data)` and `await subscribe("orders.created", async (event) => { ... })`. An event is a CloudEvents envelope (`event.data` is what was published); a handler runs inside the publisher's trace, and if it throws the event comes back, five tries in all. `src/app.ts` publishes the first declared event on every request to `/` and `src/server.ts` logs every event it subscribes to: examples to replace. `subscribe` keeps trying until it is receiving, since a new app can start before NATS knows it. Locally there is no NATS: `publish` returns `null` and `subscribe` never calls back.
+
+## The API this app offers: `openapi.json`
+
+Routes written with `createRoute` in `src/app.ts` carry their request and response schemas ([zod](https://zod.dev)), and [`openapi.json`](openapi.json) is generated from them ([OpenAPI 3.1](https://spec.openapis.org/oas/v3.1.0)); the app also serves it at `/openapi.json`. The platform reads the file to show other apps what they can call.
+
+After changing a described route, run `npm run build && npm run openapi` and commit `openapi.json`: `test/openapi.test.mjs` fails while the file and the routes disagree, so a change to the API always shows in a pull request. A route added with plain `app.get(...)` works but is not described.
+
+## Without the platform
+
+Locally there are no platform keys or tokens: requests without a token work as before and a request with one is refused; to call another app, set `SWHURL_SERVICE_<NAME>_URL` to a local stub.
 
 ## Local development
 
@@ -37,27 +46,7 @@ npm install
 npm run dev                             # the SDK stays off locally (the image turns it on)
 curl http://localhost:8080/healthz
 npm run check                           # type-check, as CI does
-npm run build && npm test               # the tests run against the built server
+npm run build && npm test               # the tests run against the built app
 ```
 
-To see telemetry locally, `npm run build`, then `OTEL_TRACES_EXPORTER=console node --import ./dist/instrumentation.js dist/server.js` prints spans (or run an OpenTelemetry collector on `localhost:4318` and drop the variable).
-
-## Checks and dependency updates
-
-Every pull request and every push to `main` runs the same checks, from the workflow shared by every app: `.github/workflows/container.yml` calls the template's [`app.yml`](https://github.com/samclement/swhurl-app-template-typescript/blob/main/.github/workflows/app.yml), so fixes to the checks reach this repository without editing it (keep `container.yml` as it is). The checks: type-check, `npm test`, an image build, and a smoke test that starts the image the way the cluster does (read-only root filesystem, only `/tmp` writable) and expects `/healthz` to answer and the process to stay up. Only `main` pushes the image.
-
-[Renovate](https://docs.renovatebot.com/) opens the update pull requests. `renovate.json` extends the template's shared [`renovate-preset.json`](https://github.com/samclement/swhurl-app-template-typescript/blob/main/renovate-preset.json), so rule changes there reach every app:
-
-| Update | What happens |
-| --- | --- |
-| Minor, patch, digest | Merges itself once every check passes; the merge publishes an image, which deploys to staging. Promote to production as usual |
-| Major | Waits for you to review and merge |
-| OpenTelemetry packages | One grouped pull request |
-
-**Keep a test.** `test/healthz.test.mjs` is the minimum; add tests for what the app does. An app without tests should not merge updates unchecked: set `"automerge": false` in its `renovate.json`, so updates wait for you, and check staging before promoting.
-
-Renovate runs here because the Renovate GitHub App is installed for all repositories with a config file required; a new repository from this template is picked up on its next run, with no onboarding pull request. The Dependency Dashboard issue lists pending updates.
-
-
-
-A published image reaches staging at once through the platform image webhook.
+To see telemetry locally, `npm run build`, then `OTEL_TRACES_EXPORTER=console node --import ./dist/instrumentation.js dist/main.js` prints spans (or run an OpenTelemetry collector on `localhost:4318` and drop the variable).
