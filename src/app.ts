@@ -3,6 +3,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { trace } from "@opentelemetry/api";
 import pino from "pino";
 import { declaredPublishes, publish } from "./events.js";
+import { flagsLoaded } from "./flags.js";
 import { type Caller, Unauthorized, identify, notify, service } from "./platform.js";
 
 export const logger = pino({
@@ -19,8 +20,10 @@ app.onError((error, c) => {
   return c.json({ error: "internal error" }, 500);
 });
 
-// What the platform probes: no caller check, no log line.
+// What the platform probes: no caller check, no log line. Not ready until the app's feature flag
+// overrides have arrived (at most 5 s; src/flagstore.ts).
 app.get("/healthz", (c) => {
+  if (!flagsLoaded()) return c.json({ ok: false, waiting: "feature flag overrides" }, 503);
   return c.json({ ok: true });
 });
 
@@ -54,7 +57,7 @@ app.use(async (c, next) => {
 });
 
 // An example of calling another app: GET /call/orders asks the app "orders" for its "/" and
-// returns what it said. It works once this app declares the call (calls: [orders] in swhurl.yaml).
+// returns what it said. It works once the platform grants this app the call (make app-calls).
 app.get("/call/:name", async (c) => {
   const name = c.req.param("name");
   try {
@@ -86,8 +89,9 @@ async function hello(caller: Caller) {
       logger.error({ err: error, event: published, trace_id: traceId() }, "event not published");
     }
   }
+  const message = `hello from ${serviceName}`;
   return {
-    message: `hello from ${serviceName}`,
+    message,
     service: serviceName,
     caller,
     event: eventId ? { type: `${serviceName}.${published}`, id: eventId } : null,
