@@ -7,3 +7,5 @@ database: none
 description: 'The first swhurl example app: says hello and repeats itself'
 events: none
 kind: web
+
+#copier updated
